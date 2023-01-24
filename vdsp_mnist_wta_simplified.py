@@ -66,7 +66,7 @@ def run_one_sample(
 
             # teacher_neurons[i] = 1
             # teacher_stimuli[i,:] = np.random(0,1,params.duration_per_sample) > params.techer_spikes_prob
-            teacher_stimuli[i,:] = np.random.uniform(0,params.threshold*params.teacher_stimuli_strength, size=(1, params.duration_per_sample))
+            teacher_stimuli[i,:] = np.random.uniform(params.threshold*params.teacher_stimuli_strength*0.1,params.threshold*params.teacher_stimuli_strength, size=(1, params.duration_per_sample))
 
         else:
             teacher_stimuli[i,:] = 0
@@ -111,7 +111,7 @@ def run_one_sample(
 
 def main(
     seed=0x1B,
-    n_output_neurons=30,
+    n_output_neurons=10,
     duration_per_sample=350,  # ms
     duration_between_samples=200,  # ms
     input_leak_cst=np.exp(-1 / 30),  # ms
@@ -125,8 +125,10 @@ def main(
     vdsp_lr=0.005,
     with_validation=False,
     with_plots=True,
-    teacher_stimuli_strength=0.8
+    teacher_stimuli_strength=0.01
 ):
+    # input_bias=0.009
+    # refractory_period=15
     print("Arguments:", locals())
     np.random.seed(seed)
     mndata = MNIST()
