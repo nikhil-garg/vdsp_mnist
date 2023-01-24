@@ -27,6 +27,7 @@ NetworkParameters = namedtuple(
         "refractory_period",
         "threshold",
         "lateral_inhibition_period",
+        "teacher_stimuli_strength"
     ),
 )
 VDSPParameters = namedtuple("VDSPParameters", ("vdsp_lr",))
@@ -45,6 +46,7 @@ def vdsp(w, vmem, lr=1):
 @njit
 def run_one_sample(
     X,
+    Y,
     network_state: NetworkState,
     network_parameters: NetworkParameters,
     vdsp_parameters: VDSPParameters,
@@ -53,6 +55,25 @@ def run_one_sample(
 
     params = network_parameters
     refractory_neurons = np.zeros(mem_pot_output.shape[0], dtype=np.int64)
+
+    # teacher_neurons = np.zeros(mem_pot_output.shape[0], dtype=np.int64)
+    teacher_stimuli = np.zeros((mem_pot_output.shape[0], params.duration_per_sample)) 
+    # Teacher neurons are 1 for the correct class and 0 for the others
+
+    for i in range(len(refractory_neurons)):
+
+        if (i%10) == Y: 
+
+            # teacher_neurons[i] = 1
+            # teacher_stimuli[i,:] = np.random(0,1,params.duration_per_sample) > params.techer_spikes_prob
+            teacher_stimuli[i,:] = np.random.uniform(0,params.threshold*params.teacher_stimuli_strength, size=(1, params.duration_per_sample))
+
+        else:
+            teacher_stimuli[i,:] = 0
+    
+    if vdsp_parameters.vdsp_lr == 0:
+        teacher_stimuli = teacher_stimuli * 0 # No teacher spikes if no plasticity (for testing)
+    
     recorded_output_spikes = np.zeros((mem_pot_output.shape[0], params.duration_per_sample))
     for t in range(params.duration_per_sample):
         refractory_neurons = np.maximum(0, refractory_neurons - 1)
@@ -63,7 +84,8 @@ def run_one_sample(
 
         mem_pot_output[non_refrac_neurons] = mem_pot_output[
             non_refrac_neurons
-        ] * params.output_leak_cst + input_spikes.astype(np.float64) @ (weights[:, non_refrac_neurons])
+        ] * params.output_leak_cst + input_spikes.astype(np.float64) @ (weights[:, non_refrac_neurons]) + teacher_stimuli[non_refrac_neurons,t]
+
         output_spikes = mem_pot_output > params.threshold
 
         if np.any(output_spikes):
@@ -89,7 +111,7 @@ def run_one_sample(
 
 def main(
     seed=0x1B,
-    n_output_neurons=10,
+    n_output_neurons=30,
     duration_per_sample=350,  # ms
     duration_between_samples=200,  # ms
     input_leak_cst=np.exp(-1 / 30),  # ms
@@ -100,9 +122,10 @@ def main(
     lateral_inhibition_period=10,  # ms
     input_scale=0.00675,
     nb_epochs=1,
-    vdsp_lr=0.001,
+    vdsp_lr=0.005,
     with_validation=False,
     with_plots=True,
+    teacher_stimuli_strength=0.8
 ):
     print("Arguments:", locals())
     np.random.seed(seed)
@@ -136,6 +159,7 @@ def main(
         refractory_period,
         output_threshold,
         lateral_inhibition_period,
+        teacher_stimuli_strength,
     )
 
     vdsp_parameters = VDSPParameters(vdsp_lr)
@@ -146,33 +170,41 @@ def main(
 
             (network_state, recorded_output_spikes) = run_one_sample(
                 X,
+                y,
                 network_state,
                 network_parameters,
                 vdsp_parameters,
             )
 
             if with_plots and (i + 1) % 5000 == 0:
-                fig, axs = plt.subplots(2, n_output_neurons // 2, tight_layout=True)
+                fig, axs = plt.subplots(5, n_output_neurons // 5)
                 fig.suptitle(f"Receptive fields of output neurons at iteration {i+1}")
                 axs = axs.flatten()
                 for neuron in range(n_output_neurons):
-                    if i > len(y_train) // 2:
-                        axs[neuron].get_yaxis().set_visible(False)
-                        axs[neuron].set_xticks([])
-                    else:
-                        axs[neuron].set_axis_off()
-                    axs[neuron].imshow(weights[:, neuron].reshape(28, 28))
+                    # if i > len(y_train) // 2:
+                    #    axs[neuron].set_xlabel(f"{np.argmax(spike_counts, axis=0)[neuron]}")
+                    #    axs[neuron].get_yaxis().set_visible(False)
+                    #    axs[neuron].set_xticks([])
+                    # else:
+                    axs[neuron].set_axis_off()
+                    axs[neuron].imshow(weights[:, neuron].reshape(28, 28)  ,vmin=0,vmax=1)  # , cmap="hot"
 
-                fig.savefig(
-                    f"receptive_fields_epoch_{epoch:02}_iteration_{i+1:05}.png",
-                    bbox_inches="tight",
-                )
+                plt.tight_layout()
+                fig.savefig(f"mnist_wta_epoch_{epoch:02}_iteration_{i+1:05}.png", bbox_inches="tight")
+                # fig.savefig(f"fields_{seed}.png", bbox_inches="tight")
+
+                fig,axs=plt.subplots(1,1)
+                plt.hist(weights.flatten(), 50, density=True, facecolor='g', alpha=0.75)
+                # plt.title('Histogram of IQ')
+                plt.title(f"Histogram of weights at iteration {i+1}")
+                plt.savefig(f"{seed}_histogram_mnist_wta_epoch_{epoch:02}_iteration_{i+1:05}.png", bbox_inches="tight")
 
     ### Compute spike counts for the training set without learning
     spike_counts = np.zeros((10, n_output_neurons))  # For every class, keep track of spike count per neuron
     for i, (X, y) in enumerate(zip(tqdm(X_train), y_train)):
         (network_state, recorded_output_spikes,) = run_one_sample(
             X,
+            y,
             network_state,
             network_parameters,
             vdsp_parameters_without_learning,
@@ -186,6 +218,7 @@ def main(
     for i, (X, y) in enumerate(zip(tqdm(X_test), y_test)):
         (network_state, recorded_output_spikes,) = run_one_sample(
             X,
+            y,
             network_state,
             network_parameters,
             vdsp_parameters_without_learning,
