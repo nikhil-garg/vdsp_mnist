@@ -61,6 +61,7 @@ def normalize_weights(weights, scale):
 # @njit
 def run_one_sample(
     X,
+    Y,
     mem_pot_input,
     mem_pot_output,
     weights,
@@ -77,6 +78,7 @@ def run_one_sample(
     ### VDSP parameters
     use_vdsp,
     vdsp_lr,
+    teacher_stimuli_strength,
     ### STDP parameters (if use_vdsp=false)
     dapre,
     dapost,
@@ -93,6 +95,23 @@ def run_one_sample(
     refractory_neurons = np.zeros(mem_pot_output.shape[0])
     recorded_input_spikes = np.zeros((mem_pot_input.shape[0], duration_per_sample))
     recorded_output_spikes = np.zeros((mem_pot_output.shape[0], duration_per_sample))
+
+    teacher_stimuli = np.zeros((mem_pot_output.shape[0], duration_per_sample)) 
+    for i in range(len(refractory_neurons)):
+
+        if (i%10) == Y: 
+
+            # teacher_neurons[i] = 1
+            # teacher_stimuli[i,:] = np.random(0,1,params.duration_per_sample) > params.techer_spikes_prob
+            teacher_stimuli[i,:] = np.random.uniform(threshold_rest*teacher_stimuli_strength*0.1,threshold_rest*teacher_stimuli_strength, size=(1, duration_per_sample))
+
+        else:
+            teacher_stimuli[i,:] = 0
+    
+    if vdsp_lr == 0:
+        teacher_stimuli = teacher_stimuli * 0 # No teacher spikes if no plasticity (for testing)
+
+
     if use_vdsp is False:
         last_spike_time_pre = np.zeros(mem_pot_input.shape[0])
         last_spike_time_post = np.zeros(mem_pot_output.shape[0])
@@ -125,7 +144,7 @@ def run_one_sample(
 
         mem_pot_output[non_refrac_neurons] = (
             mem_pot_output[non_refrac_neurons] * output_leak_cst
-            + input_spikes.astype(np.float64) @ weights[:, non_refrac_neurons]
+            + input_spikes.astype(np.float64) @ weights[:, non_refrac_neurons] + teacher_stimuli[non_refrac_neurons,t]
         )
         output_spikes = mem_pot_output > thresholds
         if np.any(output_spikes):
@@ -179,6 +198,7 @@ def main(
     nb_epochs=1,
     use_vdsp=True,
     vdsp_lr=0.001,
+    teacher_stimuli_strength=0.1,
     tau_pre=150,
     tau_post=150,
     dapre=0.00000001,
@@ -227,6 +247,7 @@ def main(
         for i, (X, y) in enumerate(zip(tqdm(X_train), y_train)):
             mem_pot_input, mem_pot_output, weights, recorded_input_spikes, recorded_output_spikes = run_one_sample(
                 X,
+                y,
                 mem_pot_input,
                 mem_pot_output,
                 weights,
@@ -241,6 +262,7 @@ def main(
                 lateral_inhibition_period,
                 use_vdsp=use_vdsp,
                 vdsp_lr=vdsp_lr,
+                teacher_stimuli_strength=teacher_stimuli_strength,
                 tau_pre=tau_pre,
                 tau_post=tau_post,
                 dapre=dapre,
@@ -285,6 +307,7 @@ def main(
     for i, (X, y) in enumerate(zip(tqdm(X_test), y_test)):
         mem_pot_input, mem_pot_output, weights, recorded_input_spikes, recorded_output_spikes = run_one_sample(
             X,
+            y,
             mem_pot_input,
             mem_pot_output,
             weights,
@@ -299,6 +322,7 @@ def main(
             lateral_inhibition_period,
             use_vdsp=use_vdsp,
             vdsp_lr=0,
+            teacher_stimuli_strength=0,
             tau_pre=tau_pre,
             tau_post=tau_post,
             dapre=0,
