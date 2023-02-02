@@ -1,12 +1,13 @@
 import os
 import numpy as np
-from mnist import MNIST
+import mnist
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from fire import Fire
 from sklearn.model_selection import train_test_split
 import pandas as pd
-
+import pickle
+from datetime import datetime
 try:
     from numba import njit
 except ModuleNotFoundError:
@@ -128,7 +129,7 @@ def run_one_sample(
 
         # weight = 0.1
         # X = weight*np.random.poisson(X/1000, size=784).clip(0, 1)
-
+        X = X.reshape(784)
 
 
         mem_pot_input[non_refrac_input_neurons] = (
@@ -188,7 +189,7 @@ def save_dict_to_file(dic, filename):
 
 def main(
     seed=0x1B,
-    n_output_neurons=10,
+    n_output_neurons=15,
     duration_per_sample=350,
     duration_between_samples=100,
     input_leak_cst=np.exp(-1 / 30),
@@ -207,7 +208,7 @@ def main(
     vdsp_lr=0.001,
     lr_pn=1,
     vdsp_offset=0.0,
-    teacher_stimuli_strength=0.1,
+    teacher_stimuli_strength=0.0,
     tau_pre=150,
     tau_post=150,
     dapre=0.00000001,
@@ -221,9 +222,9 @@ def main(
     normalize_duration=False,
 ):
     print(locals())
-
+    timeNow = datetime.now()
     argument_dict = locals()
-    filename = f"accuracy_{seed}.csv"
+    filename = f"accuracy_{timeNow}.csv"
     # save_dict_to_file(argument_dict, filename)
 
     df = pd.DataFrame.from_dict(argument_dict, orient="index")
@@ -233,15 +234,16 @@ def main(
 
 
     np.random.seed(seed)
-    mndata = MNIST()
-    images, labels = mndata.load_training()
+    images= mnist.train_images()
+    labels= mnist.train_labels()
     X_train, y_train = np.asarray(images), np.asarray(labels)
     X_train = X_train / 255 * input_scale
 
     if with_validation:
         X_train, X_test, y_train, y_test = train_test_split(X_train, y_train, test_size=0.33)
     else:
-        images, labels = mndata.load_testing()
+        images= mnist.test_images()
+        labels= mnist.test_labels()
         X_test, y_test = np.asarray(images), np.asarray(labels)
         X_test = X_test / 255 * input_scale
 
@@ -250,8 +252,16 @@ def main(
     weights = np.random.uniform(0, weight_init_scale, size=(784, n_output_neurons))
     thresholds = np.ones(n_output_neurons) * output_threshold
     max_freq = 0
-
     spike_counts = np.zeros((10, n_output_neurons))  # For every class, keep track of spike count per neuron
+
+    # Data collection
+
+    global_mem_pot_input = []
+    global_mem_pot_output = []
+    global_weights = []
+    global_recorded_input_spikes = []
+    global_recorded_output_spikes = []
+
     for epoch in range(nb_epochs):
         for i, (X, y) in enumerate(zip(tqdm(X_train), y_train)):
             mem_pot_input, mem_pot_output, weights, recorded_input_spikes, recorded_output_spikes = run_one_sample(
@@ -286,6 +296,14 @@ def main(
                 th_leak_cst=th_leak_cst,
                 threshold_rest=output_threshold,
             )
+            
+            # record everything
+            global_mem_pot_input.append(mem_pot_input)
+            global_mem_pot_output.append(mem_pot_output)
+            #global_weights.append(weights)
+            #global_recorded_input_spikes.append(recorded_input_spikes)
+            #global_recorded_output_spikes.append(recorded_output_spikes)
+
             if nb_epochs > 1 or i > len(y_train) // 2:
                 spike_counts[y] += np.sum(recorded_output_spikes, axis=1)
 
@@ -295,20 +313,26 @@ def main(
                 duration_per_sample = int(10 * 1000 / max_freq)
 
             if with_plots and (i + 1) % 5000 == 0:
-                fig, axs = plt.subplots(2, n_output_neurons // 2)
+                fig, axs = plt.subplots(2, ((n_output_neurons // 2)+(n_output_neurons % 2)))
                 fig.suptitle(f"Receptive fields of output neurons at iteration {i+1}")
                 axs = axs.flatten()
                 for neuron in range(n_output_neurons):
-                    if i > len(y_train) // 2:
-                        axs[neuron].set_xlabel(f"{np.argmax(spike_counts, axis=0)[neuron]}")
-                        axs[neuron].get_yaxis().set_visible(False)
-                        axs[neuron].set_xticks([])
-                    else:
-                        axs[neuron].set_axis_off()
+                    axs[neuron].axis('off')
                     axs[neuron].imshow(weights[:, neuron].reshape(28, 28))  # , cmap="hot"
 
                 plt.tight_layout()
                 fig.savefig(f"mnist_wta_epoch_{epoch:02}_iteration_{i+1:05}.png", bbox_inches="tight")
+
+                # Store collected data into binary file
+                with open(f"Sim_data_{timeNow}",'wb') as f:
+                    pickle.dump([global_mem_pot_input, global_mem_pot_output],f) #, global_weights, global_recorded_input_spikes, global_recorded_output_spikes
+                
+                # Clear stored data
+                global_mem_pot_input.clear()
+                global_mem_pot_output.clear()
+                #global_weights.clear()
+                #global_recorded_input_spikes.clear()
+                #global_recorded_output_spikes.clear()
 
     # Normalize the spike counts per neuron
     # sum_spike_counts = spike_counts.sum(axis=1)
@@ -366,6 +390,7 @@ def main(
     print(f"Accuracy of method 1: {nb_correct_classification_method_1 / len(y_test):.5f}")
     print(f"Accuracy of method 2: {nb_correct_classification_method_2 / len(y_test):.5f}")
     print(f"Maximum spiking frequency of input layer: {max_freq}")
+
     return (
         max(nb_correct_classification_method_1 / len(y_test), nb_correct_classification_method_2 / len(y_test)),
         max_freq,
@@ -485,19 +510,22 @@ def run_random_stdp(seed):
 
 def run_vdsp(
     output_threshold=10,
-    **args,
+    teacher_stimuli_strength=0.0,
+    **args
 ):
     return main(
         output_threshold=output_threshold,
+        teacher_stimuli_strength=teacher_stimuli_strength,
         **args,
     )
 
 
-def run_stdp(refractory_period_input=2, use_vdsp=False, lateral_inhibition_period=8, **args):
+def run_stdp(refractory_period_input=2, use_vdsp=False, lateral_inhibition_period=8, teacher_stimuli_strength=0.0, **args):
     return main(
         refractory_period_input=refractory_period_input,
         use_vdsp=use_vdsp,
         lateral_inhibition_period=lateral_inhibition_period,
+        teacher_stimuli_strength=teacher_stimuli_strength,
         **args,
     )
 
